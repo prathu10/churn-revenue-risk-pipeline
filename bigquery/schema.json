@@ -1,0 +1,20 @@
+{
+  "events": [
+    {"name": "event_id", "type": "STRING", "mode": "REQUIRED"},
+    {"name": "customer_id", "type": "STRING", "mode": "REQUIRED"},
+    {"name": "event_type", "type": "STRING", "mode": "REQUIRED"},
+    {"name": "timestamp", "type": "TIMESTAMP", "mode": "REQUIRED"},
+    {"name": "value", "type": "FLOAT", "mode": "NULLABLE"},
+    {"name": "device", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "details", "type": "STRING", "mode": "NULLABLE"}
+  ],
+  "churn_risk": [
+    {"name": "customer_id", "type": "STRING", "mode": "REQUIRED"},
+    {"name": "churn_probability", "type": "FLOAT", "mode": "REQUIRED"},
+    {"name": "contract_value", "type": "FLOAT", "mode": "REQUIRED"},
+    {"name": "revenue_at_risk", "type": "FLOAT", "mode": "REQUIRED"},
+    {"name": "risk_segment", "type": "STRING", "mode": "REQUIRED"},
+    {"name": "support_tickets_count", "type": "INTEGER", "mode": "NULLABLE"},
+    {"name": "last_updated", "type": "TIMESTAMP", "mode": "REQUIRED"}
+  ]
+}
