@@ -1,81 +1,180 @@
 import os
+import argparse
 import joblib
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, roc_auc_score
+from sklearn.metrics import classification_report, roc_auc_score, precision_recall_fscore_support
+from dotenv import load_dotenv
+from bigquery.loader import get_bq_client
 from shared.logging_config import setup_logger
 
 logger = setup_logger("ml.train")
 
-def generate_historical_dataset(n_samples=2000):
-    """Generates synthetic historical customer churn data to train our model."""
-    logger.info(f"Generating {n_samples} synthetic customer histories for training...")
+# Load environment variables
+load_dotenv()
+
+"""
+Baseline Model Choice Explanation:
+Given the small dataset size (~108 rows), a shallow Random Forest Classifier (max_depth=4) is an excellent baseline choice:
+1. Low Risk of Overfitting: Restricted trees (shallow depth) limit complexity and prevent high-variance fitting on small datasets.
+2. Handling Categorical Variables: Integrated with scikit-learn's ColumnTransformer and OneHotEncoder, it handles different categorical values and missing fallbacks smoothly.
+3. No Feature Scaling Required: Unlike SVMs, KNN, or Neural Networks, Tree-based models are scale-invariant, allowing tenure, CLV, and monthly charges to be processed natively.
+
+Recommendations to Improve with More Data:
+1. Feature Engineering: Incorporate historical rolling averages (slopes/trends of activity) instead of single-day count snapshots.
+2. Imbalance Management: If churn rates are low, use class-weight balancing (class_weight="balanced") or resampling techniques (SMOTE).
+3. Advanced Models: Transition to gradient-boosted trees (e.g., XGBoost, LightGBM, CatBoost) once the dataset exceeds 1,000+ records.
+4. Hyperparameter Tuning: Use cross-validated grid search (GridSearchCV) to tune model parameters.
+"""
+
+def pull_data_from_bq():
+    """Queries BigQuery customer_features table and loads it into a Pandas DataFrame."""
+    client = get_bq_client()
+    project_id = client.project
+    dataset_id = os.getenv("BIGQUERY_DATASET", "churn_pipeline")
+    table_ref = f"{project_id}.{dataset_id}.customer_features"
     
-    np.random.seed(42)
+    logger.info(f"Querying features from BigQuery table '{table_ref}'...")
+    query = f"SELECT * FROM `{table_ref}`"
+    query_job = client.query(query)
     
-    # Features
-    support_tickets = np.random.poisson(lam=1.2, size=n_samples)
-    login_frequency = np.random.randint(1, 11, size=n_samples)
-    contract_value = np.random.uniform(20.0, 500.0, size=n_samples)
-    days_since_last_login = np.random.geometric(p=0.15, size=n_samples) - 1
-    
-    # Latent churn risk logic (formula + noise)
-    # Higher support tickets, lower login frequency, more days inactive -> higher churn chance
-    score = (support_tickets * 0.4) - (login_frequency * 0.25) + (days_since_last_login * 0.15)
-    # Add random noise
-    score += np.random.normal(loc=0.0, scale=0.5, size=n_samples)
-    
-    # Sigmoid probability
-    prob = 1 / (1 + np.exp(-score))
-    
-    # Target label: Churn (1 = churned, 0 = active)
-    # Threshold at 0.5
-    churned = (prob > 0.5).astype(int)
-    
-    df = pd.DataFrame({
-        "support_tickets_count": support_tickets,
-        "login_frequency": login_frequency,
-        "contract_value": contract_value,
-        "days_since_last_login": days_since_last_login,
-        "churned": churned
-    })
-    
+    # Iterate and construct DataFrame to avoid db-dtypes package dependency
+    rows = [dict(row) for row in query_job]
+    if not rows:
+        raise ValueError(f"No records found in BigQuery table {table_ref}.")
+        
+    df = pd.DataFrame(rows)
+    logger.info(f"Successfully loaded {len(df)} records from BigQuery.")
     return df
 
-def train_churn_model():
-    """Trains a Random Forest Classifier and saves the model artifact."""
-    df = generate_historical_dataset()
+def pull_data_local():
+    """Loads and merges all local processed CSV files from the output directory."""
+    processed_dir = os.path.join(os.path.dirname(__file__), "../output/processed")
+    if not os.path.exists(processed_dir):
+        raise FileNotFoundError(f"Local processed directory not found at: {processed_dir}")
+        
+    files = [
+        os.path.join(processed_dir, f) 
+        for f in os.listdir(processed_dir) 
+        if f.startswith("processed_features_") and f.endswith(".csv")
+    ]
     
-    features = ["support_tickets_count", "login_frequency", "contract_value", "days_since_last_login"]
+    if not files:
+        raise FileNotFoundError("No processed feature files found inside output/processed/.")
+        
+    logger.info(f"Merging and loading {len(files)} local feature files...")
+    df_list = [pd.read_csv(f) for f in files]
+    df = pd.concat(df_list, ignore_index=True)
+    logger.info(f"Successfully loaded {len(df)} records from local files.")
+    return df
+
+def train_model(local_only=False):
+    """Fits baseline model, prints validation metrics, and stores pipeline artifact."""
+    # 1. Pull data
+    if local_only:
+        df = pull_data_local()
+    else:
+        df = pull_data_from_bq()
+        
+    # 2. Check for minimum sample size
+    if len(df) < 5:
+        raise ValueError(f"Insufficient data for training. Found only {len(df)} samples.")
+        
+    # 3. Separate features and target
+    # Map target churn_status (Active vs Churned) to binary
+    if "churn_status" not in df.columns:
+        raise KeyError("Target column 'churn_status' is missing from features dataset.")
+        
+    df["target"] = (df["churn_status"] == "Churned").astype(int)
+    
+    features = [
+        "contract_type", "tenure", "monthly_charges", 
+        "customer_lifetime_value", "usage_trends", "support_ticket_frequency", "payment_method"
+    ]
+    
+    # Keep only columns that exist
+    features = [f for f in features if f in df.columns]
     X = df[features]
-    y = df["churned"]
+    y = df["target"]
     
-    # Split
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    logger.info(f"Training features selected: {features}")
     
-    logger.info(f"Training set size: {len(X_train)}, Testing set size: {len(X_test)}")
+    # 4. Build preprocessing pipeline
+    categorical_features = ["contract_type", "payment_method"]
+    categorical_features = [f for f in categorical_features if f in X.columns]
     
-    # Train
-    clf = RandomForestClassifier(n_estimators=100, max_depth=6, random_state=42)
-    clf.fit(X_train, y_train)
+    numeric_features = [f for f in X.columns if f not in categorical_features]
     
-    # Evaluate
-    preds = clf.predict(X_test)
-    probs = clf.predict_proba(X_test)[:, 1]
+    # Pipeline transformation configuration
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features)
+        ],
+        remainder="passthrough" # Leave numeric columns untouched
+    )
     
-    auc = roc_auc_score(y_test, probs)
-    logger.info(f"Model Training Completed. ROC AUC: {auc:.4f}")
-    logger.info("Classification Report:\n" + classification_report(y_test, preds))
+    # Restricted tree depth to prevent overfitting on small samples
+    clf = RandomForestClassifier(n_estimators=50, max_depth=4, random_state=42)
     
-    # Save the model
-    os.makedirs(os.path.dirname(__file__), exist_ok=True)
-    model_path = os.path.join(os.path.dirname(__file__), "churn_model.joblib")
-    joblib.dump(clf, model_path)
-    logger.info(f"Saved model to: {model_path}")
+    pipeline = Pipeline(steps=[
+        ("preprocessor", preprocessor),
+        ("classifier", clf)
+    ])
     
-    return clf
+    # 5. Split train/test (stratified if multiple classes exist)
+    unique_classes = np.unique(y)
+    stratify_target = y if len(unique_classes) > 1 and (y.value_counts() > 1).all() else None
+    
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.25, random_state=42, stratify=stratify_target
+    )
+    
+    logger.info(f"Training set: {len(X_train)} samples, Test set: {len(X_test)} samples.")
+    
+    # 6. Fit pipeline
+    pipeline.fit(X_train, y_train)
+    
+    # 7. Evaluate Model
+    preds = pipeline.predict(X_test)
+    probs = pipeline.predict_proba(X_test)[:, 1] if len(unique_classes) > 1 else np.zeros_like(y_test)
+    
+    # Calculate scores
+    precision, recall, f1, _ = precision_recall_fscore_support(y_test, preds, average="binary", zero_division=0)
+    
+    # ROC AUC requires both classes in the test partition
+    if len(np.unique(y_test)) > 1:
+        auc = roc_auc_score(y_test, probs)
+    else:
+        auc = 1.0 # default fallback
+        
+    print("\n" + "="*50)
+    print("BASELINE CHURN MODEL EVALUATION RESULTS")
+    print(f"Test Partition Size: {len(y_test)}")
+    print("-"*50)
+    print(f"Precision (Churned Class): {precision:.4f}")
+    print(f"Recall (Churned Class):    {recall:.4f}")
+    print(f"F1 Score (Churned Class):  {f1:.4f}")
+    print(f"ROC-AUC Score:             {auc:.4f}")
+    print("="*50 + "\n")
+    
+    logger.info("Classification Report:\n" + classification_report(y_test, preds, zero_division=0))
+    
+    # 8. Save Pipeline Model
+    model_dir = os.path.dirname(__file__)
+    model_path = os.path.join(model_dir, "churn_model.joblib")
+    joblib.dump(pipeline, model_path)
+    logger.info(f"Saved complete processing & classifier pipeline to: {model_path}")
+    
+    return pipeline
 
 if __name__ == "__main__":
-    train_churn_model()
+    parser = argparse.ArgumentParser(description="Baseline Churn Model Ingestion & Training")
+    parser.add_argument("--local", action="store_true", help="Execute locally merging processed output files")
+    args = parser.parse_args()
+    
+    train_model(local_only=args.local)

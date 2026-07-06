@@ -41,3 +41,7 @@ htmlcov/
 # Simulated and processed outputs
 output/
 
+# ML Model weights
+*.joblib
+
+

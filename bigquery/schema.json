@@ -28,7 +28,21 @@
     {"name": "payment_method", "type": "STRING", "mode": "NULLABLE"},
     {"name": "churn_status", "type": "STRING", "mode": "NULLABLE"},
     {"name": "load_date", "type": "DATE", "mode": "NULLABLE"}
+  ],
+  "churn_predictions": [
+    {"name": "customer_id", "type": "STRING", "mode": "REQUIRED"},
+    {"name": "churn_probability", "type": "FLOAT", "mode": "REQUIRED"},
+    {"name": "revenue_at_risk", "type": "FLOAT", "mode": "REQUIRED"},
+    {"name": "predicted_date", "type": "TIMESTAMP", "mode": "REQUIRED"}
+  ],
+  "pipeline_metrics": [
+    {"name": "run_date", "type": "DATE", "mode": "REQUIRED"},
+    {"name": "records_in", "type": "INTEGER", "mode": "NULLABLE"},
+    {"name": "records_out", "type": "INTEGER", "mode": "NULLABLE"},
+    {"name": "null_rate", "type": "FLOAT", "mode": "NULLABLE"},
+    {"name": "run_duration", "type": "FLOAT", "mode": "NULLABLE"}
   ]
 }
+
 
 

@@ -2,6 +2,7 @@ import os
 import json
 import pytest
 import pandas as pd
+import numpy as np
 from unittest.mock import MagicMock
 
 # Mock Google Cloud clients before they get instantiated at import time
@@ -15,8 +16,8 @@ from shared.logging_config import setup_logger
 from data_sim.generator import generate_customers, generate_event, CUSTOMER_PERSONAS
 from functions.main import transform_event
 
-from ml.train import generate_historical_dataset
-from ml.predict import get_active_customers
+from ml.train import train_model
+from ml.predict import run_predictions_pipeline
 from alerts.main import process_alert
 
 def test_shared_logging():
@@ -74,21 +75,55 @@ def test_cf_transform_event():
     }
     assert transform_event(invalid_raw) is None
 
-def test_ml_historical_data_gen():
-    df = generate_historical_dataset(100)
-    assert isinstance(df, pd.DataFrame)
-    assert len(df) == 100
-    expected_cols = ["support_tickets_count", "login_frequency", "contract_value", "days_since_last_login", "churned"]
-    for col in expected_cols:
-        assert col in df.columns
+def test_ml_train_pipeline():
+    # Mock data pulling
+    df = pd.DataFrame({
+        "customer_id": [f"C_{i}" for i in range(20)],
+        "contract_type": ["Month-to-month"] * 10 + ["Two year"] * 10,
+        "tenure": np.random.randint(1, 72, size=20),
+        "monthly_charges": np.random.uniform(20.0, 120.0, size=20),
+        "customer_lifetime_value": np.random.uniform(100.0, 5000.0, size=20),
+        "usage_trends": np.random.randint(0, 10, size=20),
+        "support_ticket_frequency": np.random.randint(0, 5, size=20),
+        "payment_method": ["Mailed check"] * 10 + ["Electronic check"] * 10,
+        "churn_status": ["Active"] * 15 + ["Churned"] * 5
+    })
+    
+    import ml.train
+    original_pull = ml.train.pull_data_local
+    ml.train.pull_data_local = MagicMock(return_value=df)
+    
+    # This should run successfully and save model to ml/churn_model.joblib
+    pipeline = train_model(local_only=True)
+    assert pipeline is not None
+    assert os.path.exists(os.path.join(os.path.dirname(ml.train.__file__), "churn_model.joblib"))
+    
+    ml.train.pull_data_local = original_pull
 
-def test_ml_predict_active_customers():
-    df = get_active_customers(20)
-    assert isinstance(df, pd.DataFrame)
-    assert len(df) == 20
-    expected_cols = ["customer_id", "support_tickets_count", "login_frequency", "contract_value", "days_since_last_login"]
-    for col in expected_cols:
-        assert col in df.columns
+def test_ml_predict_pipeline():
+    # Mock data pulling
+    df = pd.DataFrame({
+        "customer_id": [f"C_{i}" for i in range(10)],
+        "contract_type": ["Month-to-month"] * 5 + ["Two year"] * 5,
+        "tenure": np.random.randint(1, 72, size=10),
+        "monthly_charges": np.random.uniform(20.0, 120.0, size=10),
+        "customer_lifetime_value": np.random.uniform(100.0, 5000.0, size=10),
+        "usage_trends": np.random.randint(0, 10, size=10),
+        "support_ticket_frequency": np.random.randint(0, 5, size=10),
+        "payment_method": ["Mailed check"] * 5 + ["Electronic check"] * 5,
+        "churn_status": ["Active"] * 10
+    })
+    
+    import ml.predict
+    original_pull = ml.predict.pull_features_local
+    ml.predict.pull_features_local = MagicMock(return_value=df)
+    
+    # Run prediction and verify it succeeds
+    success = run_predictions_pipeline(local_only=True)
+    assert success is True
+    assert os.path.exists(os.path.join(os.path.dirname(ml.predict.__file__), "../output/churn_predictions.csv"))
+    
+    ml.predict.pull_features_local = original_pull
 
 def test_alerts_process():
     # Test alert logic execution with fallback logging

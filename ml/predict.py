@@ -1,10 +1,12 @@
 import os
 import sys
+import argparse
 import joblib
 import pandas as pd
 import numpy as np
 from datetime import datetime
 from dotenv import load_dotenv
+from bigquery.loader import get_bq_client, insert_rows
 from shared.logging_config import setup_logger
 
 logger = setup_logger("ml.predict")
@@ -12,138 +14,143 @@ logger = setup_logger("ml.predict")
 # Load environment variables
 load_dotenv()
 
-# We import BigQuery loader function to save predictions
-try:
-    from bigquery.loader import insert_rows
-except ImportError:
-    logger.warning("Could not import bigquery.loader. Data ingestion will fall back to local outputs.")
-    insert_rows = None
-
-def get_active_customers(n_samples=50):
-    """
-    Simulates getting active customer features for scoring.
-    In a real system, this would query BigQuery events.
-    """
-    logger.info("Fetching active customer features...")
-    np.random.seed(10)
+def pull_features_from_bq():
+    """Queries BigQuery customer_features table and loads it into a Pandas DataFrame."""
+    client = get_bq_client()
+    project_id = client.project
+    dataset_id = os.getenv("BIGQUERY_DATASET", "churn_pipeline")
+    table_ref = f"{project_id}.{dataset_id}.customer_features"
     
-    customer_ids = [f"CUST_{1000 + i}" for i in range(n_samples)]
-    support_tickets = np.random.poisson(lam=0.8, size=n_samples)
-    login_frequency = np.random.randint(2, 11, size=n_samples)
-    contract_value = np.random.uniform(30.0, 450.0, size=n_samples)
-    days_since_last_login = np.random.poisson(lam=2.5, size=n_samples)
+    logger.info(f"Querying features to score from BigQuery table '{table_ref}'...")
+    # Fetch the latest features for each customer to score
+    # (or simply score all rows currently in the features table)
+    query = f"SELECT * FROM `{table_ref}`"
+    query_job = client.query(query)
     
-    # Introduce a few outlier high-risk customers manually
-    support_tickets[0] = 5
-    login_frequency[0] = 1
-    days_since_last_login[0] = 14
-    
-    support_tickets[1] = 4
-    login_frequency[1] = 2
-    days_since_last_login[1] = 8
-    
-    df = pd.DataFrame({
-        "customer_id": customer_ids,
-        "support_tickets_count": support_tickets,
-        "login_frequency": login_frequency,
-        "contract_value": contract_value,
-        "days_since_last_login": days_since_last_login
-    })
+    # Iterate and construct DataFrame to avoid db-dtypes package dependency
+    rows = [dict(row) for row in query_job]
+    if not rows:
+        raise ValueError(f"No records found in BigQuery table {table_ref}.")
+        
+    df = pd.DataFrame(rows)
+    logger.info(f"Successfully loaded {len(df)} records from BigQuery for scoring.")
     return df
 
-def generate_risk_scores():
-    """Loads model, scores active customers, calculates revenue-at-risk, and writes output."""
+def pull_features_local():
+    """Loads and merges all local processed CSV files from the output directory for scoring."""
+    processed_dir = os.path.join(os.path.dirname(__file__), "../output/processed")
+    if not os.path.exists(processed_dir):
+        raise FileNotFoundError(f"Local processed directory not found at: {processed_dir}")
+        
+    files = [
+        os.path.join(processed_dir, f) 
+        for f in os.listdir(processed_dir) 
+        if f.startswith("processed_features_") and f.endswith(".csv")
+    ]
+    
+    if not files:
+        raise FileNotFoundError("No processed feature files found inside output/processed/.")
+        
+    logger.info(f"Merging and loading {len(files)} local feature files for scoring...")
+    df_list = [pd.read_csv(f) for f in files]
+    df = pd.concat(df_list, ignore_index=True)
+    logger.info(f"Successfully loaded {len(df)} records from local files for scoring.")
+    return df
+
+def run_predictions_pipeline(local_only=False):
+    """Loads fitted model, scores customers, calculates revenue risk, ranks and writes predictions."""
     model_path = os.path.join(os.path.dirname(__file__), "churn_model.joblib")
     
+    # 1. Load trained model
     if not os.path.exists(model_path):
         logger.error(f"Trained model not found at {model_path}. Please run train.py first!")
         sys.exit(1)
         
-    # Load model
-    clf = joblib.load(model_path)
-    logger.info("Successfully loaded churn classification model.")
+    pipeline = joblib.load(model_path)
+    logger.info("Successfully loaded churn model pipeline.")
     
-    # Get features to score
-    df = get_active_customers()
+    # 2. Get customer features
+    if local_only:
+        df = pull_features_local()
+    else:
+        df = pull_features_from_bq()
+        
+    # Check if features are empty
+    if len(df) == 0:
+        logger.warning("No customers found for scoring. Aborting pipeline.")
+        return False
+        
+    # 3. Predict churn probabilities
+    # The pipeline automatically handles One-Hot Encoding via its preprocessor step
+    features = [
+        "contract_type", "tenure", "monthly_charges", 
+        "customer_lifetime_value", "usage_trends", "support_ticket_frequency", "payment_method"
+    ]
     
-    features = ["support_tickets_count", "login_frequency", "contract_value", "days_since_last_login"]
+    # Check that features match columns in X
+    missing = [f for f in features if f not in df.columns]
+    if missing:
+        logger.error(f"Missing expected columns in features dataset: {missing}")
+        return False
+        
     X = df[features]
     
-    # Run predictions
-    probs = clf.predict_proba(X)[:, 1]
+    # Get probability of the positive class (Churned)
+    probs = pipeline.predict_proba(X)[:, 1]
     
-    # Assemble results
+    # 4. Calculate revenue-at-risk
     df["churn_probability"] = np.round(probs, 4)
-    df["revenue_at_risk"] = np.round(df["churn_probability"] * df["contract_value"], 2)
-    df["contract_value"] = np.round(df["contract_value"], 2)
+    df["revenue_at_risk"] = np.round(df["churn_probability"] * df["customer_lifetime_value"], 2)
     
-    # Risk segmentation
-    # High: prob >= 0.65, Medium: 0.3 <= prob < 0.65, Low: prob < 0.3
-    df["risk_segment"] = pd.cut(
-        df["churn_probability"],
-        bins=[-0.01, 0.30, 0.65, 1.01],
-        labels=["Low", "Medium", "High"]
-    ).astype(str)
+    # 5. Rank by revenue_at_risk descending
+    df_ranked = df.sort_values(by="revenue_at_risk", ascending=False).copy()
     
-    df["last_updated"] = datetime.utcnow().isoformat() + "Z"
+    # 6. Save results
+    predicted_date = datetime.utcnow().isoformat() + "Z"
     
-    # Output file
-    predictions_dir = os.path.join(os.path.dirname(__file__), "../output")
-    os.makedirs(predictions_dir, exist_ok=True)
-    csv_path = os.path.join(predictions_dir, "churn_risk_scores.csv")
-    df.to_csv(csv_path, index=False)
-    logger.info(f"Predictions saved locally to {csv_path}")
+    # Output schema: customer_id, churn_probability, revenue_at_risk, predicted_date
+    results_df = pd.DataFrame({
+        "customer_id": df_ranked["customer_id"],
+        "churn_probability": df_ranked["churn_probability"],
+        "revenue_at_risk": df_ranked["revenue_at_risk"],
+        "predicted_date": predicted_date
+    })
     
-    # Ingest to BigQuery if enabled
-    bq_enabled = os.getenv("BIGQUERY_DATASET") is not None
-    if bq_enabled and insert_rows:
-        # Convert df to list of dicts matching schema
-        bq_rows = df.to_dict(orient="records")
-        # Ensure correct column types
+    if local_only:
+        predictions_dir = os.path.join(os.path.dirname(__file__), "../output")
+        os.makedirs(predictions_dir, exist_ok=True)
+        local_output_path = os.path.join(predictions_dir, "churn_predictions.csv")
+        results_df.to_csv(local_output_path, index=False)
+        logger.info(f"Successfully saved ranked churn predictions locally: {local_output_path}")
+        print("\n" + "="*50)
+        print("TOP 10 LOCAL CUSTOMERS BY REVENUE RISK RANKING")
+        print(results_df.head(10).to_string(index=False))
+        print("="*50 + "\n")
+    else:
+        # Ingest into BigQuery churn_predictions table
+        bq_rows = results_df.to_dict(orient="records")
+        # Ensure correct column typing
         for row in bq_rows:
             row["churn_probability"] = float(row["churn_probability"])
-            row["contract_value"] = float(row["contract_value"])
             row["revenue_at_risk"] = float(row["revenue_at_risk"])
-            row["support_tickets_count"] = int(row["support_tickets_count"])
             
-        table_name = os.getenv("BIGQUERY_TABLE_CHURN_RISK", "churn_risk")
-        success = insert_rows(table_name, bq_rows)
+        logger.info(f"Streaming {len(bq_rows)} scored churn predictions into BigQuery...")
+        success = insert_rows("churn_predictions", bq_rows)
         if success:
-            logger.info("Successfully ingested churn predictions into BigQuery.")
+            logger.info("Successfully ingested predictions into 'churn_predictions' BigQuery table.")
+            print("\n" + "="*50)
+            print("TOP 10 SCORDED CUSTOMERS STREAMED TO BIGQUERY")
+            print(results_df.head(10).to_string(index=False))
+            print("="*50 + "\n")
         else:
-            logger.warning("Failed to ingest churn predictions into BigQuery.")
+            logger.error("Failed to stream predictions into BigQuery.")
+            return False
             
-    # Trigger local alerting check for High Risk
-    trigger_alerts(df)
-    
-    return df
-
-def trigger_alerts(df):
-    """Checks for severe revenue-at-risk breaches and notifies via alerting module."""
-    # Find customers: High risk and contract_value > 150
-    alert_condition = (df["risk_segment"] == "High") & (df["revenue_at_risk"] > 100.0)
-    critical_customers = df[alert_condition]
-    
-    if not critical_customers.empty:
-        logger.warning(f"CRITICAL RISK: Found {len(critical_customers)} customers with high churn risk and high revenue-at-risk!")
-        
-        # Import alerts dynamically
-        try:
-            sys.path.append(os.path.join(os.path.dirname(__file__), "../alerts"))
-            from main import process_alert
-            
-            for _, customer in critical_customers.iterrows():
-                alert_payload = {
-                    "customer_id": customer["customer_id"],
-                    "churn_probability": customer["churn_probability"],
-                    "revenue_at_risk": customer["revenue_at_risk"],
-                    "contract_value": customer["contract_value"]
-                }
-                process_alert(alert_payload)
-        except Exception as e:
-            logger.error(f"Failed to trigger alert notification: {str(e)}")
-    else:
-        logger.info("No critical churn alert thresholds breached.")
+    return True
 
 if __name__ == "__main__":
-    generate_risk_scores()
+    parser = argparse.ArgumentParser(description="Churn Prediction Ingestion & Scoring Engine")
+    parser.add_argument("--local", action="store_true", help="Score using local processed feature CSVs")
+    args = parser.parse_args()
+    
+    run_predictions_pipeline(local_only=args.local)
