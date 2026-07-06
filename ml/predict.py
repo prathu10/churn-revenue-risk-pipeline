@@ -1,4 +1,5 @@
 import os
+import io
 import sys
 import argparse
 import joblib
@@ -127,23 +128,48 @@ def run_predictions_pipeline(local_only=False):
         print(results_df.head(10).to_string(index=False))
         print("="*50 + "\n")
     else:
-        # Ingest into BigQuery churn_predictions table
-        bq_rows = results_df.to_dict(orient="records")
-        # Ensure correct column typing
-        for row in bq_rows:
-            row["churn_probability"] = float(row["churn_probability"])
-            row["revenue_at_risk"] = float(row["revenue_at_risk"])
-            
-        logger.info(f"Streaming {len(bq_rows)} scored churn predictions into BigQuery...")
-        success = insert_rows("churn_predictions", bq_rows)
-        if success:
+        client = get_bq_client()
+        dataset_id = os.getenv("BIGQUERY_DATASET", "churn_pipeline")
+        table_ref = f"{client.project}.{dataset_id}.churn_predictions"
+        today_str = datetime.utcnow().strftime("%Y-%m-%d")
+        
+        # Overwrite-by-date logic: clear existing predictions for the current date to prevent duplicates
+        logger.info(f"Safeguard: Deleting existing predictions for date '{today_str}' to prevent duplicates...")
+        delete_query = f"DELETE FROM `{table_ref}` WHERE DATE(predicted_date) = '{today_str}'"
+        try:
+            client.query(delete_query).result()
+        except Exception as delete_ex:
+            logger.warning(f"Could not clear potential duplicates: {str(delete_ex)}")
+
+        # Convert results to CSV bytes buffer
+        csv_buffer = io.StringIO()
+        results_df.to_csv(csv_buffer, index=False)
+        csv_buffer.seek(0)
+        
+        # Configure Load Job to load CSV to BigQuery
+        # This completely bypasses the streaming buffer, allowing subsequent DELETE statements to succeed!
+        from google.cloud import bigquery as bq_module
+        job_config = bq_module.LoadJobConfig(
+            source_format=bq_module.SourceFormat.CSV,
+            skip_leading_rows=1,
+            write_disposition=bq_module.WriteDisposition.WRITE_APPEND
+        )
+        
+        logger.info(f"Loading {len(results_df)} scored churn predictions into BigQuery via Load Job...")
+        try:
+            load_job = client.load_table_from_file(
+                io.BytesIO(csv_buffer.getvalue().encode("utf-8")),
+                table_ref,
+                job_config=job_config
+            )
+            load_job.result()
             logger.info("Successfully ingested predictions into 'churn_predictions' BigQuery table.")
             print("\n" + "="*50)
-            print("TOP 10 SCORDED CUSTOMERS STREAMED TO BIGQUERY")
+            print("TOP 10 SCORDED CUSTOMERS LOADED TO BIGQUERY")
             print(results_df.head(10).to_string(index=False))
             print("="*50 + "\n")
-        else:
-            logger.error("Failed to stream predictions into BigQuery.")
+        except Exception as load_ex:
+            logger.error(f"Failed to load predictions into BigQuery: {str(load_ex)}")
             return False
             
     return True

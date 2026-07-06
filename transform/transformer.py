@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import csv
 import json
 import argparse
 import pandas as pd
@@ -19,6 +20,13 @@ try:
 except ImportError:
     get_storage_client = None
     logger.warning("Could not import GCS client. Cloud operations will be unavailable.")
+
+# Attempt to load BigQuery client for metrics persistence
+try:
+    from bigquery.loader import get_bq_client
+except ImportError:
+    get_bq_client = None
+    logger.warning("Could not import BigQuery client. Metrics will only be saved locally.")
 
 def parse_date(date_str):
     """Parses date string (YYYYMMDD or YYYY-MM-DD) into YYYYMMDD and YYYY-MM-DD formats."""
@@ -149,8 +157,64 @@ def calculate_null_rates(df):
     null_rates = (null_counts / len(df)) * 100
     return null_rates.to_dict()
 
-def write_metrics_log(date_str, raw_profile_cnt, raw_events_cnt, output_cnt, null_rates, local_only=True, bucket_name=None):
-    """Logs transform metadata and outputs a metrics report file."""
+def write_metrics_to_bq(date_str: str, records_in: int, records_out: int, avg_null_rate: float, run_duration: float):
+    """
+    Persists a single pipeline run row to the BigQuery `pipeline_metrics` table.
+    Uses a delete-then-load-job upsert to prevent duplicate date entries.
+    """
+    if not get_bq_client:
+        logger.warning("BigQuery client unavailable. Skipping BQ metrics write.")
+        return
+
+    try:
+        from google.cloud import bigquery as bq
+
+        project  = os.getenv("GCP_PROJECT_ID")
+        dataset  = os.getenv("BIGQUERY_DATASET", "churn_pipeline")
+        table_id = "pipeline_metrics"
+        full_ref  = f"{project}.{dataset}.{table_id}"
+
+        client = get_bq_client()
+
+        # Upsert: delete existing row for this date, then insert fresh
+        client.query(f"DELETE FROM `{full_ref}` WHERE run_date = '{date_str}'").result()
+
+        row = {
+            "run_date":    date_str,
+            "records_in":  records_in,
+            "records_out": records_out,
+            "null_rate":   round(avg_null_rate, 4),
+            "run_duration": round(run_duration, 4) if run_duration is not None else None,
+        }
+
+        csv_buf   = io.StringIO()
+        writer    = csv.DictWriter(csv_buf, fieldnames=list(row.keys()))
+        writer.writeheader()
+        writer.writerow(row)
+        csv_buf.seek(0)
+        csv_bytes = io.BytesIO(csv_buf.getvalue().encode("utf-8"))
+
+        job_config = bq.LoadJobConfig(
+            source_format=bq.SourceFormat.CSV,
+            skip_leading_rows=1,
+            write_disposition=bq.WriteDisposition.WRITE_APPEND,
+            schema=[
+                bq.SchemaField("run_date",    "DATE",    mode="REQUIRED"),
+                bq.SchemaField("records_in",  "INTEGER", mode="NULLABLE"),
+                bq.SchemaField("records_out", "INTEGER", mode="NULLABLE"),
+                bq.SchemaField("null_rate",   "FLOAT",   mode="NULLABLE"),
+                bq.SchemaField("run_duration","FLOAT",   mode="NULLABLE"),
+            ],
+        )
+        table_ref = client.dataset(dataset).table(table_id)
+        client.load_table_from_file(csv_bytes, table_ref, job_config=job_config).result()
+        logger.info(f"Persisted pipeline metrics for {date_str} to BigQuery table `{full_ref}`.")
+    except Exception as e:
+        logger.error(f"Failed to write metrics to BigQuery: {e}")
+
+
+def write_metrics_log(date_str, raw_profile_cnt, raw_events_cnt, output_cnt, null_rates, local_only=True, bucket_name=None, run_duration=None):
+    """Logs transform metadata, outputs a local metrics report file, and persists to BigQuery."""
     report = (
         f"===================================================\n"
         f"CHURN PIPELINE TRANSFORMATION METRICS REPORT\n"
@@ -177,6 +241,16 @@ def write_metrics_log(date_str, raw_profile_cnt, raw_events_cnt, output_cnt, nul
     with open(local_path, "w") as f:
         f.write(report)
     logger.info(f"Saved local metrics report at: {local_path}")
+
+    # Always persist to BigQuery (regardless of local_only flag)
+    avg_null = sum(null_rates.values()) / len(null_rates) if null_rates else 0.0
+    write_metrics_to_bq(
+        date_str=date_str,
+        records_in=raw_profile_cnt + raw_events_cnt,
+        records_out=output_cnt,
+        avg_null_rate=avg_null,
+        run_duration=run_duration or 0.0,
+    )
     
     # Save to GCS if in cloud mode
     if not local_only and bucket_name and get_storage_client:

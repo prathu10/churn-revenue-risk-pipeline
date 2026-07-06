@@ -490,34 +490,56 @@ with tab3:
         st.markdown("""
         <div class="metric-card">
             <h4 style="margin-top:0; color:#3b82f6;">🔮 Baseline Model Performance</h4>
-            <table style="width:100%; border-collapse: collapse; margin-top:15px; font-size:15px;">
-                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 35px;">
+            <table style="width:100%; border-collapse: collapse; margin-top:15px; font-size:14px;">
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 32px;">
                     <td style="color:#94a3b8; font-weight:600;">Algorithm</td>
                     <td style="text-align:right; font-weight:700; color:#fff;">Random Forest Classifier</td>
                 </tr>
-                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 35px;">
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 32px;">
                     <td style="color:#94a3b8; font-weight:600;">Model Depth (Max)</td>
                     <td style="text-align:right; font-weight:700; color:#fff;">4</td>
                 </tr>
-                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 35px;">
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 32px;">
+                    <td style="color:#94a3b8; font-weight:600;">Class Imbalance Handling</td>
+                    <td style="text-align:right; font-weight:700; color:#10b981;">class_weight='balanced'</td>
+                </tr>
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 32px;">
                     <td style="color:#94a3b8; font-weight:600;">ROC-AUC Score</td>
-                    <td style="text-align:right; font-weight:700; color:#10b981; font-size:16px;">88.89%</td>
+                    <td style="text-align:right; font-weight:700; color:#10b981; font-size:15px;">95.83%</td>
                 </tr>
-                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 35px;">
-                    <td style="color:#94a3b8; font-weight:600;">Precision (Churned)</td>
-                    <td style="text-align:right; font-weight:700; color:#f59e0b;">0.00%*</td>
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 32px; background-color: rgba(255,255,255,0.02)">
+                    <td style="color:#3b82f6; font-weight:700;" colspan="2">Metrics at Default Threshold (0.5)</td>
                 </tr>
-                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 35px;">
-                    <td style="color:#94a3b8; font-weight:600;">Recall (Churned)</td>
-                    <td style="text-align:right; font-weight:700; color:#f59e0b;">0.00%*</td>
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 32px;">
+                    <td style="color:#94a3b8; font-weight:600; padding-left: 10px;">Precision (Churned)</td>
+                    <td style="text-align:right; font-weight:700; color:#fff;">100.00%</td>
                 </tr>
-                <tr style="height: 35px;">
-                    <td style="color:#94a3b8; font-weight:600;">F1-Score (Churned)</td>
-                    <td style="text-align:right; font-weight:700; color:#f59e0b;">0.00%*</td>
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 32px;">
+                    <td style="color:#94a3b8; font-weight:600; padding-left: 10px;">Recall (Churned)</td>
+                    <td style="text-align:right; font-weight:700; color:#fff;">66.67%</td>
+                </tr>
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 32px;">
+                    <td style="color:#94a3b8; font-weight:600; padding-left: 10px;">F1-Score (Churned)</td>
+                    <td style="text-align:right; font-weight:700; color:#fff;">80.00%</td>
+                </tr>
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 32px; background-color: rgba(255,255,255,0.02)">
+                    <td style="color:#f59e0b; font-weight:700;" colspan="2">Metrics at Custom Threshold (0.3) [Rec.]</td>
+                </tr>
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 32px;">
+                    <td style="color:#94a3b8; font-weight:600; padding-left: 10px;">Precision (Churned)</td>
+                    <td style="text-align:right; font-weight:700; color:#fff;">25.00%</td>
+                </tr>
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); height: 32px;">
+                    <td style="color:#94a3b8; font-weight:600; padding-left: 10px;">Recall (Churned)</td>
+                    <td style="text-align:right; font-weight:700; color:#fff;">100.00%</td>
+                </tr>
+                <tr style="height: 32px;">
+                    <td style="color:#94a3b8; font-weight:600; padding-left: 10px;">F1-Score (Churned)</td>
+                    <td style="text-align:right; font-weight:700; color:#fff;">40.00%</td>
                 </tr>
             </table>
             <p style="color:#64748b; font-size:12px; margin-top:20px; font-style:italic;">
-                *Note: Due to extreme class imbalance (~11% churn rate) and small test split, binary scoring yields 0% at the default 0.5 threshold. However, the high ROC-AUC (88.89%) proves the model operates as a highly robust probability ranker.
+                *Note: The model includes class weight balancing. At the default 0.5 threshold, it achieves 100% precision with 66.67% recall (detecting 2 out of 3 churned customers). Lowering the decision threshold to 0.3 recovers all 3 churned customers (100% recall) with a precision of 25% due to the small, imbalanced test partition (3 churned, 24 active).
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -525,15 +547,34 @@ with tab3:
     with health_col2:
         st.markdown("<h4 style='margin-top:0;'>ETL Run History (pipeline_metrics)</h4>", unsafe_allow_html=True)
         if not metrics_df.empty:
-            # Format columns
+            # Rename columns for display
             metrics_display = metrics_df.copy()
             metrics_display.columns = ["Run Date", "Records In", "Records Out", "Null Rate (%)", "Duration (s)"]
+
+            # Coerce numeric columns — backfilled rows may have None for Duration
+            metrics_display["Null Rate (%)"] = pd.to_numeric(metrics_display["Null Rate (%)"], errors="coerce")
+            metrics_display["Duration (s)"]  = pd.to_numeric(metrics_display["Duration (s)"],  errors="coerce")
+
+            # Build per-cell format functions that gracefully handle NaN/None → "N/A"
+            def fmt_pct(v):
+                try:
+                    return f"{float(v):.2f}%" if v is not None and not pd.isna(v) else "N/A"
+                except (TypeError, ValueError):
+                    return "N/A"
+
+            def fmt_dur(v):
+                try:
+                    return f"{float(v):.2f}s" if v is not None and not pd.isna(v) else "N/A"
+                except (TypeError, ValueError):
+                    return "N/A"
+
             st.dataframe(
                 metrics_display.style.format({
-                    "Null Rate (%)": "{:.2f}%",
-                    "Duration (s)": "{:.2f}s"
+                    "Null Rate (%)": fmt_pct,
+                    "Duration (s)":  fmt_dur,
                 }),
                 width="stretch"
             )
         else:
             st.info("No pipeline metrics records available in BQ.")
+

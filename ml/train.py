@@ -8,7 +8,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, roc_auc_score, precision_recall_fscore_support
+from sklearn.metrics import classification_report, roc_auc_score, precision_recall_fscore_support, confusion_matrix
 from dotenv import load_dotenv
 from bigquery.loader import get_bq_client
 from shared.logging_config import setup_logger
@@ -118,8 +118,8 @@ def train_model(local_only=False):
         remainder="passthrough" # Leave numeric columns untouched
     )
     
-    # Restricted tree depth to prevent overfitting on small samples
-    clf = RandomForestClassifier(n_estimators=50, max_depth=4, random_state=42)
+    # Restricted tree depth with balanced class weight configuration to prevent overfitting on small samples
+    clf = RandomForestClassifier(n_estimators=50, max_depth=4, random_state=42, class_weight='balanced')
     
     pipeline = Pipeline(steps=[
         ("preprocessor", preprocessor),
@@ -134,17 +134,28 @@ def train_model(local_only=False):
         X, y, test_size=0.25, random_state=42, stratify=stratify_target
     )
     
+    # Log the exact count of churned vs active customers in both splits
+    train_counts = y_train.value_counts().to_dict()
+    test_counts = y_test.value_counts().to_dict()
     logger.info(f"Training set: {len(X_train)} samples, Test set: {len(X_test)} samples.")
+    logger.info(f"Train set class distribution: {train_counts} (0=Active, 1=Churned)")
+    logger.info(f"Test set class distribution:  {test_counts} (0=Active, 1=Churned)")
     
     # 6. Fit pipeline
     pipeline.fit(X_train, y_train)
     
     # 7. Evaluate Model
-    preds = pipeline.predict(X_test)
     probs = pipeline.predict_proba(X_test)[:, 1] if len(unique_classes) > 1 else np.zeros_like(y_test)
     
-    # Calculate scores
-    precision, recall, f1, _ = precision_recall_fscore_support(y_test, preds, average="binary", zero_division=0)
+    # Default 0.5 threshold evaluation
+    preds_05 = (probs >= 0.5).astype(int)
+    precision_05, recall_05, f1_05, _ = precision_recall_fscore_support(y_test, preds_05, average="binary", zero_division=0)
+    cm_05 = confusion_matrix(y_test, preds_05)
+    
+    # Custom 0.3 threshold evaluation
+    preds_03 = (probs >= 0.3).astype(int)
+    precision_03, recall_03, f1_03, _ = precision_recall_fscore_support(y_test, preds_03, average="binary", zero_division=0)
+    cm_03 = confusion_matrix(y_test, preds_03)
     
     # ROC AUC requires both classes in the test partition
     if len(np.unique(y_test)) > 1:
@@ -156,13 +167,25 @@ def train_model(local_only=False):
     print("BASELINE CHURN MODEL EVALUATION RESULTS")
     print(f"Test Partition Size: {len(y_test)}")
     print("-"*50)
-    print(f"Precision (Churned Class): {precision:.4f}")
-    print(f"Recall (Churned Class):    {recall:.4f}")
-    print(f"F1 Score (Churned Class):  {f1:.4f}")
-    print(f"ROC-AUC Score:             {auc:.4f}")
+    print("Default Threshold (0.5) Metrics:")
+    print(f"  Precision (Churned Class): {precision_05:.4f}")
+    print(f"  Recall (Churned Class):    {recall_05:.4f}")
+    print(f"  F1 Score (Churned Class):  {f1_05:.4f}")
+    print("  Confusion Matrix:")
+    print(f"    {cm_05[0].tolist()}\n    {cm_05[1].tolist()}")
+    print("-"*50)
+    print("Custom Threshold (0.3) Metrics (RECOMMENDED):")
+    print(f"  Precision (Churned Class): {precision_03:.4f}")
+    print(f"  Recall (Churned Class):    {recall_03:.4f}")
+    print(f"  F1 Score (Churned Class):  {f1_03:.4f}")
+    print("  Confusion Matrix:")
+    print(f"    {cm_03[0].tolist()}\n    {cm_03[1].tolist()}")
+    print("-"*50)
+    print(f"ROC-AUC Score (Threshold Independent): {auc:.4f}")
     print("="*50 + "\n")
     
-    logger.info("Classification Report:\n" + classification_report(y_test, preds, zero_division=0))
+    logger.info("Classification Report (Default 0.5 Threshold):\n" + classification_report(y_test, preds_05, zero_division=0))
+    logger.info("Classification Report (Custom 0.3 Threshold):\n" + classification_report(y_test, preds_03, zero_division=0))
     
     # 8. Save Pipeline Model
     model_dir = os.path.dirname(__file__)
