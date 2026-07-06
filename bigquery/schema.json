@@ -16,5 +16,17 @@
     {"name": "risk_segment", "type": "STRING", "mode": "REQUIRED"},
     {"name": "support_tickets_count", "type": "INTEGER", "mode": "NULLABLE"},
     {"name": "last_updated", "type": "TIMESTAMP", "mode": "REQUIRED"}
+  ],
+  "customer_features": [
+    {"name": "customer_id", "type": "STRING", "mode": "REQUIRED"},
+    {"name": "contract_type", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "tenure", "type": "INTEGER", "mode": "NULLABLE"},
+    {"name": "monthly_charges", "type": "FLOAT", "mode": "NULLABLE"},
+    {"name": "customer_lifetime_value", "type": "FLOAT", "mode": "NULLABLE"},
+    {"name": "usage_trends", "type": "INTEGER", "mode": "NULLABLE"},
+    {"name": "support_ticket_frequency", "type": "INTEGER", "mode": "NULLABLE"},
+    {"name": "payment_method", "type": "STRING", "mode": "NULLABLE"},
+    {"name": "churn_status", "type": "STRING", "mode": "NULLABLE"}
   ]
 }
+

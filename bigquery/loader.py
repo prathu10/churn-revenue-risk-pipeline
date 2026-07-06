@@ -71,16 +71,31 @@ def create_dataset_and_tables():
             
     return True
 
-def load_json_file(table_name, file_path):
-    """Loads a JSON Lines file into the specified table using a Load Job."""
+def load_file(table_name, file_path):
+    """Loads a JSON Lines or CSV file into the specified table using a Load Job."""
     client = get_bq_client()
     dataset_id = os.getenv("BIGQUERY_DATASET", "churn_pipeline")
     table_ref = client.dataset(dataset_id).table(table_name)
     
     logger.info(f"Loading '{file_path}' into BigQuery table '{dataset_id}.{table_name}'...")
     
+    # Auto-detect format by file extension
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".csv":
+        logger.info("Auto-detected CSV file format.")
+        source_format = bigquery.SourceFormat.CSV
+        skip_leading_rows = 1
+    elif ext in [".json", ".jsonl"]:
+        logger.info("Auto-detected JSON Lines file format.")
+        source_format = bigquery.SourceFormat.NEWLINE_DELIMITED_JSON
+        skip_leading_rows = 0
+    else:
+        logger.error(f"Unsupported file format extension '{ext}'. Only .csv, .json, or .jsonl files are accepted.")
+        return False
+        
     job_config = bigquery.LoadJobConfig(
-        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+        source_format=source_format,
+        skip_leading_rows=skip_leading_rows,
         write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
     )
     
@@ -119,8 +134,8 @@ def insert_rows(table_name, rows):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BigQuery Schema Manager and Loader")
     parser.add_argument("--setup", action="store_true", help="Create the BigQuery dataset and tables")
-    parser.add_argument("--load-file", type=str, help="Path to local JSON Lines file to load")
-    parser.add_argument("--table", type=str, choices=["events", "churn_risk"], help="Table to load data into")
+    parser.add_argument("--load-file", type=str, help="Path to local file (CSV/JSONLines) to load")
+    parser.add_argument("--table", type=str, choices=["events", "churn_risk", "customer_features"], help="Table to load data into")
     
     args = parser.parse_args()
     
@@ -133,6 +148,7 @@ if __name__ == "__main__":
         if not args.table:
             logger.error("--table is required when loading a file.")
             exit(1)
-        success = load_json_file(args.table, args.load_file)
+        success = load_file(args.table, args.load_file)
         if not success:
             exit(1)
+
