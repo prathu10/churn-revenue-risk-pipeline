@@ -163,4 +163,58 @@ def test_verify_uploader_format_size():
     assert format_size(1500) == "1.46 KB"
     assert format_size(2000000) == "1.91 MB"
 
+from transform.transformer import parse_date, engineer_features, calculate_null_rates
+
+def test_transform_parse_date():
+    assert parse_date("20260706") == ("20260706", "2026-07-06")
+    assert parse_date("2026-07-06") == ("20260706", "2026-07-06")
+    with pytest.raises(ValueError):
+        parse_date("invalid-date")
+
+def test_transform_engineer_features():
+    # Setup mock event data
+    events_data = [
+        {"customer_id": "C_1", "event_type": "login", "details": "{}"},
+        {"customer_id": "C_1", "event_type": "login", "details": "{}"},
+        {"customer_id": "C_1", "event_type": "support_ticket", "details": '{"topic": "billing"}'},
+        {"customer_id": "C_2", "event_type": "signup", "details": '{"payment_method": "Electronic check"}'},
+        {"customer_id": "C_2", "event_type": "login", "details": "{}"}
+    ]
+    events_df = pd.DataFrame(events_data)
+    
+    # Setup mock profile data
+    profiles_data = [
+        {"customer_id": "C_1", "contract": "Month-to-month", "tenure": 12, "monthly_charges": 50.0, "customer_lifetime_value": 600.0, "churn_status": "Active"},
+        {"customer_id": "C_2", "contract": "Two year", "tenure": 1, "monthly_charges": 100.0, "customer_lifetime_value": 2220.0, "churn_status": "Active"}
+    ]
+    profiles_df = pd.DataFrame(profiles_data)
+    
+    out_df = engineer_features(events_df, profiles_df)
+    assert len(out_df) == 2
+    
+    # Check index mapping
+    c1 = out_df[out_df["customer_id"] == "C_1"].iloc[0]
+    c2 = out_df[out_df["customer_id"] == "C_2"].iloc[0]
+    
+    assert c1["usage_trends"] == 2
+    assert c1["support_ticket_frequency"] == 1
+    assert c1["payment_method"] == "Mailed check" # default fallback
+    
+    assert c2["usage_trends"] == 1
+    assert c2["support_ticket_frequency"] == 0
+    assert c2["payment_method"] == "Electronic check" # from details
+    
+    assert c1["contract_type"] == "Month-to-month"
+    assert c2["contract_type"] == "Two year"
+
+def test_transform_calculate_null_rates():
+    test_df = pd.DataFrame({
+        "col1": [1, None, 3, None],
+        "col2": ["a", "b", "c", "d"]
+    })
+    rates = calculate_null_rates(test_df)
+    assert rates["col1"] == 50.0
+    assert rates["col2"] == 0.0
+
+
 

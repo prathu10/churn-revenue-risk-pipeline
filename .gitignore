@@ -37,3 +37,7 @@ htmlcov/
 *.njsproj
 *.sln
 *.swp
+
+# Simulated and processed outputs
+output/
+
