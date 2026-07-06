@@ -5,7 +5,7 @@ import argparse
 import joblib
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from bigquery.loader import get_bq_client, insert_rows
 from shared.logging_config import setup_logger
@@ -103,20 +103,24 @@ def run_predictions_pipeline(local_only=False):
     df["churn_probability"] = np.round(probs, 4)
     df["revenue_at_risk"] = np.round(df["churn_probability"] * df["customer_lifetime_value"], 2)
     
-    # 5. Rank by revenue_at_risk descending
-    df_ranked = df.sort_values(by="revenue_at_risk", ascending=False).copy()
-    
+    # 5. Deduplicate by customer_id — keep highest revenue_at_risk row per customer.
+    # This prevents multiple rows per customer when customer_features contains the same
+    # customer_id across multiple load_date partitions (e.g. 07-03, 07-04, 07-05).
+    df_ranked = df.sort_values(by="revenue_at_risk", ascending=False)
+    df_deduped = df_ranked.drop_duplicates(subset=["customer_id"], keep="first").copy()
+    logger.info(f"Deduplication: {len(df)} scored rows reduced to {len(df_deduped)} unique customers.")
+
     # 6. Save results
-    predicted_date = datetime.utcnow().isoformat() + "Z"
-    
+    predicted_date = datetime.now(timezone.utc).isoformat()
+
     # Output schema: customer_id, churn_probability, revenue_at_risk, predicted_date
     results_df = pd.DataFrame({
-        "customer_id": df_ranked["customer_id"],
-        "churn_probability": df_ranked["churn_probability"],
-        "revenue_at_risk": df_ranked["revenue_at_risk"],
+        "customer_id": df_deduped["customer_id"],
+        "churn_probability": df_deduped["churn_probability"],
+        "revenue_at_risk": df_deduped["revenue_at_risk"],
         "predicted_date": predicted_date
     })
-    
+
     if local_only:
         predictions_dir = os.path.join(os.path.dirname(__file__), "../output")
         os.makedirs(predictions_dir, exist_ok=True)
@@ -131,31 +135,30 @@ def run_predictions_pipeline(local_only=False):
         client = get_bq_client()
         dataset_id = os.getenv("BIGQUERY_DATASET", "churn_pipeline")
         table_ref = f"{client.project}.{dataset_id}.churn_predictions"
-        today_str = datetime.utcnow().strftime("%Y-%m-%d")
-        
-        # Overwrite-by-date logic: clear existing predictions for the current date to prevent duplicates
-        logger.info(f"Safeguard: Deleting existing predictions for date '{today_str}' to prevent duplicates...")
-        delete_query = f"DELETE FROM `{table_ref}` WHERE DATE(predicted_date) = '{today_str}'"
+
+        # Full table overwrite: TRUNCATE then reload ensures exactly 1 row per customer
+        # regardless of how many scoring runs have been done previously.
+        logger.info("Safeguard: Truncating churn_predictions table before inserting fresh scores...")
         try:
-            client.query(delete_query).result()
-        except Exception as delete_ex:
-            logger.warning(f"Could not clear potential duplicates: {str(delete_ex)}")
+            client.query(f"TRUNCATE TABLE `{table_ref}`").result()
+            logger.info("Truncate complete.")
+        except Exception as del_ex:
+            logger.warning(f"Could not truncate predictions table: {str(del_ex)}")
 
         # Convert results to CSV bytes buffer
         csv_buffer = io.StringIO()
         results_df.to_csv(csv_buffer, index=False)
         csv_buffer.seek(0)
-        
-        # Configure Load Job to load CSV to BigQuery
-        # This completely bypasses the streaming buffer, allowing subsequent DELETE statements to succeed!
+
+        # Load Job bypasses the streaming buffer — allows subsequent TRUNCATE/DELETE to succeed
         from google.cloud import bigquery as bq_module
         job_config = bq_module.LoadJobConfig(
             source_format=bq_module.SourceFormat.CSV,
             skip_leading_rows=1,
             write_disposition=bq_module.WriteDisposition.WRITE_APPEND
         )
-        
-        logger.info(f"Loading {len(results_df)} scored churn predictions into BigQuery via Load Job...")
+
+        logger.info(f"Loading {len(results_df)} deduplicated predictions into BigQuery via Load Job...")
         try:
             load_job = client.load_table_from_file(
                 io.BytesIO(csv_buffer.getvalue().encode("utf-8")),
@@ -165,7 +168,7 @@ def run_predictions_pipeline(local_only=False):
             load_job.result()
             logger.info("Successfully ingested predictions into 'churn_predictions' BigQuery table.")
             print("\n" + "="*50)
-            print("TOP 10 SCORDED CUSTOMERS LOADED TO BIGQUERY")
+            print(f"TOP 10 CUSTOMERS BY REVENUE AT RISK ({len(results_df)} unique customers scored)")
             print(results_df.head(10).to_string(index=False))
             print("="*50 + "\n")
         except Exception as load_ex:

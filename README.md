@@ -307,15 +307,22 @@ This forces the trees to treat a wrong churn prediction as 4.5× more costly tha
 Training split: **81 samples** (72 active, 9 churned)  
 Test split: **27 samples** (24 active, 3 churned)
 
-### Top Revenue-at-Risk Findings (2026-07-06 scoring run)
+### Top Revenue-at-Risk Findings (2026-07-06 scoring run · 39 unique customers)
 
 | Customer ID | Churn Probability | Revenue at Risk |
 |-------------|-------------------|-----------------|
-| 9933-QRGTX | 0.950 | $7,314.87 |
-| 9933-QRGTX | 0.940 | $7,237.12 |
-| 7564-GHCVB | 0.467 | $3,366.77 |
-| 3146-MSEGF | 0.444 | $3,562.18 |
-| 7233-PAHHL | 0.421 | $3,013.73 |
+| 9933-QRGTX  | 0.950             | $7,314.87       |
+| 3146-MSEGF  | 0.444             | $3,562.18       |
+| 7564-GHCVB  | 0.467             | $3,366.77       |
+| 7233-PAHHL  | 0.421             | $3,013.73       |
+| 9489-DEDVP  | 0.329             | $2,033.27       |
+| 0794-YVSGE  | 0.877             | $1,622.72       |
+| 5693-PIPCS  | 0.241             | $1,448.14       |
+| 6465-GSRCL  | 0.149             | $1,234.07       |
+| 4194-FJARJ  | 0.274             | $1,201.65       |
+| 5206-XZZQI  | 0.263             | $1,125.19       |
+
+> Each customer appears exactly once — the scorer deduplicates across all `load_date` partitions, keeping the highest `revenue_at_risk` snapshot per customer.
 
 ### ETL Pipeline Health (3 runs)
 
