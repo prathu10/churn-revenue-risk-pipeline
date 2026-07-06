@@ -216,5 +216,57 @@ def test_transform_calculate_null_rates():
     assert rates["col1"] == 50.0
     assert rates["col2"] == 0.0
 
+from bigquery.load_features import parse_input_counts_from_log, load_features_pipeline, execute_ddl_setup
+
+def test_bigquery_parse_log_counts():
+    mock_log = (
+        "Input Profile Count: 45\n"
+        "Input Event Count: 120\n"
+        "Output Feature Row Count: 45\n"
+    )
+    assert parse_input_counts_from_log(mock_log) == 165
+    assert parse_input_counts_from_log("invalid report data") == 0
+
+def test_bigquery_load_features_mock_run():
+    # Fake processed CSV
+    df = pd.DataFrame({
+        "customer_id": ["C_10"],
+        "contract_type": ["One year"],
+        "tenure": [15],
+        "monthly_charges": [85.5],
+        "customer_lifetime_value": [2200.0],
+        "usage_trends": [5],
+        "support_ticket_frequency": [0],
+        "payment_method": ["Electronic check"],
+        "churn_status": ["Active"]
+    })
+    
+    # Configure mock client properties
+    mock_client = google.cloud.bigquery.Client.from_service_account_json()
+    mock_client.project = "mock-project"
+    mock_client.insert_rows_json.return_value = []
+    
+    # Mock load data source
+    import bigquery.load_features
+    original_load = bigquery.load_features.load_data_source
+    bigquery.load_features.load_data_source = MagicMock(return_value=(df, 35))
+    
+    success = load_features_pipeline("2026-07-06", local_only=True, bucket_name="mock-bucket")
+    assert success is True
+    
+    # Restore original function
+    bigquery.load_features.load_data_source = original_load
+
+def test_bigquery_setup_mock_run():
+    # Configure mock client properties
+    mock_client = google.cloud.bigquery.Client.from_service_account_json()
+    mock_client.project = "mock-project"
+    
+    # Since BQ client is mocked globally, this should run successfully
+    success = execute_ddl_setup()
+    assert success is True
+
+
+
 
 
