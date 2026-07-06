@@ -322,7 +322,7 @@ with tab1:
             xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
             yaxis=dict(gridcolor="rgba(255,255,255,0.05)")
         )
-        st.plotly_chart(fig_scatter, use_container_width=True)
+        st.plotly_chart(fig_scatter, width="stretch")
         
     with chart_col2:
         st.subheader("Historical Revenue-at-Risk Trend")
@@ -354,7 +354,7 @@ with tab1:
                 xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
                 yaxis=dict(gridcolor="rgba(255,255,255,0.05)")
             )
-            st.plotly_chart(fig_trend, use_container_width=True)
+            st.plotly_chart(fig_trend, width="stretch")
         else:
             st.info("No historical trends log available.")
             
@@ -392,7 +392,7 @@ with tab1:
             "CLV": "${:,.2f}",
             "Monthly Charges": "${:,.2f}"
         }).background_gradient(subset=["Revenue At Risk"], cmap="OrRd"),
-        use_container_width=True
+        width="stretch"
     )
 
 # ----------------------------------------------------
@@ -474,7 +474,7 @@ with tab2:
             title="Revenue Profile (Target vs Exposure Risk)",
             yaxis=dict(gridcolor="rgba(255,255,255,0.05)")
         )
-        st.plotly_chart(fig_sim, use_container_width=True)
+        st.plotly_chart(fig_sim, width="stretch")
 
 # ----------------------------------------------------
 # TAB 3: PIPELINE HEALTH CENTER
@@ -533,7 +533,7 @@ with tab3:
                     "Null Rate (%)": "{:.2f}%",
                     "Duration (s)": "{:.2f}s"
                 }),
-                use_container_width=True
+                width="stretch"
             )
         else:
             st.info("No pipeline metrics records available in BQ.")
