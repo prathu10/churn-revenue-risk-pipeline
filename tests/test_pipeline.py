@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 # Mock Google Cloud clients before they get instantiated at import time
 import google.cloud.storage
 import google.cloud.bigquery
-google.cloud.storage.Client = MagicMock
-google.cloud.bigquery.Client = MagicMock
+google.cloud.storage.Client = MagicMock()
+google.cloud.bigquery.Client = MagicMock()
 
 # Import system modules
 from shared.logging_config import setup_logger
@@ -135,4 +135,32 @@ def test_daily_event_simulator(tmp_path):
     assert "customer_lifetime_value" in status_df.columns
     assert "churn_status" in status_df.columns
     assert len(status_df) > 0
+
+from gcs.daily_uploader import parse_date_from_filename, upload_daily_files
+from gcs.verify_uploader import format_size, list_bucket_contents
+
+def test_date_parsing_from_filename():
+    assert parse_date_from_filename("events_20260706.json") == "2026-07-06"
+    assert parse_date_from_filename("customer_status_20260706.csv") == "2026-07-06"
+    assert parse_date_from_filename("customer_status_123.csv") is None
+    assert parse_date_from_filename("invalid_file.json") is None
+
+def test_daily_uploader_mock_run(tmp_path):
+    output_dir = str(tmp_path)
+    
+    # Create fake daily files
+    with open(os.path.join(output_dir, "events_20260706.json"), "w") as f:
+        f.write("{}\n")
+    with open(os.path.join(output_dir, "customer_status_20260706.csv"), "w") as f:
+        f.write("customer_id,churn_status\n")
+        
+    # Runs using global mock GCS client
+    success = upload_daily_files(output_dir, "mock-bucket")
+    assert success is True
+
+def test_verify_uploader_format_size():
+    assert format_size(500) == "500.00 B"
+    assert format_size(1500) == "1.46 KB"
+    assert format_size(2000000) == "1.91 MB"
+
 
