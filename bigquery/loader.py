@@ -1,6 +1,9 @@
 import os
 import json
 import argparse
+import re
+import io
+import pandas as pd
 from dotenv import load_dotenv
 from google.cloud import bigquery
 from shared.logging_config import setup_logger
@@ -93,16 +96,52 @@ def load_file(table_name, file_path):
         logger.error(f"Unsupported file format extension '{ext}'. Only .csv, .json, or .jsonl files are accepted.")
         return False
         
-    job_config = bigquery.LoadJobConfig(
-        source_format=source_format,
-        skip_leading_rows=skip_leading_rows,
-        write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-    )
-    
-    try:
-        with open(file_path, "rb") as source_file:
-            job = client.load_table_from_file(source_file, table_ref, job_config=job_config)
+    # Check if load_date already exists for duplicate prevention
+    date_str = None
+    match = re.search(r"(\d{4})[-_]?(\d{2})[-_]?(\d{2})", file_path)
+    if match:
+        date_str = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+        
+    if table_name == "customer_features" and date_str:
+        try:
+            # Query if data for this date was already loaded
+            query = f"SELECT COUNT(1) FROM `{client.project}.{dataset_id}.{table_name}` WHERE load_date = '{date_str}'"
+            query_job = client.query(query)
+            results = list(query_job.result())
+            count = results[0][0] if results else 0
+            if count > 0:
+                logger.warning(f"Data for date '{date_str}' has already been loaded into '{table_name}' ({count} rows). Skipping load to prevent duplicates.")
+                return True
+        except Exception as e:
+            logger.info(f"Could not check existing load dates (table might not exist or be empty): {str(e)}")
             
+    try:
+        if ext == ".csv" and table_name == "customer_features":
+            # Load CSV via pandas to inject load_date
+            df = pd.read_csv(file_path)
+            if date_str:
+                df["load_date"] = date_str
+            
+            csv_buffer = io.BytesIO()
+            df.to_csv(csv_buffer, index=False)
+            csv_buffer.seek(0)
+            
+            job_config = bigquery.LoadJobConfig(
+                source_format=bigquery.SourceFormat.CSV,
+                skip_leading_rows=1,
+                write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+            )
+            job = client.load_table_from_file(csv_buffer, table_ref, job_config=job_config)
+        else:
+            # Standard load
+            job_config = bigquery.LoadJobConfig(
+                source_format=source_format,
+                skip_leading_rows=skip_leading_rows,
+                write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+            )
+            with open(file_path, "rb") as source_file:
+                job = client.load_table_from_file(source_file, table_ref, job_config=job_config)
+                
         # Wait for the load job to complete
         job.result()
         logger.info(f"Loaded {job.output_rows} rows into '{dataset_id}.{table_name}'.")
@@ -110,6 +149,7 @@ def load_file(table_name, file_path):
     except Exception as e:
         logger.error(f"Error loading file to BigQuery: {str(e)}")
         return False
+
 
 def insert_rows(table_name, rows):
     """Streams rows directly into BigQuery using streaming insert API."""

@@ -21,8 +21,10 @@ CREATE TABLE IF NOT EXISTS `GCP_PROJECT_ID.churn_pipeline.customer_features` (
     usage_trends INT64,
     support_ticket_frequency INT64,
     payment_method STRING,
-    churn_status STRING
+    churn_status STRING,
+    load_date DATE
 );
+
 
 -- 3. churn_predictions table storing model runs and scoring logs
 CREATE TABLE IF NOT EXISTS `GCP_PROJECT_ID.churn_pipeline.churn_predictions` (

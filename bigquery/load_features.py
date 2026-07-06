@@ -163,6 +163,21 @@ def load_features_pipeline(date_str, local_only=True, bucket_name=None):
     features_table_ref = f"{project_id}.{dataset_id}.customer_features"
     metrics_table_ref = f"{project_id}.{dataset_id}.pipeline_metrics"
     
+    # Check if load_date already exists for duplicate prevention
+    try:
+        query = f"SELECT COUNT(1) FROM `{features_table_ref}` WHERE load_date = '{date_yyyy_mm_dd}'"
+        query_job = client.query(query)
+        results = list(query_job.result())
+        count = results[0][0] if results else 0
+        if count > 0:
+            logger.warning(f"Data for date '{date_yyyy_mm_dd}' has already been loaded into '{features_table_ref}' ({count} rows). Skipping ingestion to prevent duplicates.")
+            return True
+    except Exception as e:
+        logger.info(f"Could not check existing load dates (table might not exist or be empty): {str(e)}")
+        
+    # Inject load_date column matching updated table schema
+    df["load_date"] = date_yyyy_mm_dd
+    
     # Use load job config
     job_config = bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.CSV,
@@ -176,6 +191,7 @@ def load_features_pipeline(date_str, local_only=True, bucket_name=None):
     csv_buffer = io.BytesIO()
     df.to_csv(csv_buffer, index=False)
     csv_buffer.seek(0)
+
     
     try:
         load_job = client.load_table_from_file(csv_buffer, features_table_ref, job_config=job_config)
